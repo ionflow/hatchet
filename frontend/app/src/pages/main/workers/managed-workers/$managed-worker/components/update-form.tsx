@@ -74,14 +74,19 @@ export default function UpdateWorkerForm({
           },
         ],
       },
-      runtimeConfig: {
-        numReplicas: managedWorker.runtimeConfig.numReplicas,
-        cpuKind: managedWorker.runtimeConfig.cpuKind,
-        cpus: managedWorker.runtimeConfig.cpus,
-        memoryMb: managedWorker.runtimeConfig.memoryMb,
-        envVars: managedWorker.runtimeConfig.envVars,
-        region: managedWorker.runtimeConfig.region,
-      },
+      runtimeConfig:
+        managedWorker.isIac || !managedWorker.runtimeConfigs?.length
+          ? {}
+          : managedWorker.runtimeConfigs?.length > 0
+            ? {
+                numReplicas: managedWorker.runtimeConfigs[0].numReplicas,
+                cpuKind: managedWorker.runtimeConfigs[0].cpuKind,
+                cpus: managedWorker.runtimeConfigs[0].cpus,
+                memoryMb: managedWorker.runtimeConfigs[0].memoryMb,
+                envVars: managedWorker.runtimeConfigs[0].envVars,
+                region: managedWorker.runtimeConfigs[0].region,
+              }
+            : {},
     },
   });
 
@@ -108,8 +113,14 @@ export default function UpdateWorkerForm({
     ...queries.github.listBranches(installation, repoOwner, repoName),
   });
 
+  const currEnvVars =
+    (managedWorker.runtimeConfigs &&
+      managedWorker.runtimeConfigs.length > 0 &&
+      managedWorker.runtimeConfigs[0].envVars) ||
+    undefined;
+
   const [envVars, setEnvVars] = useState<KeyValueType[]>(
-    envVarsRecordToKeyValueType(managedWorker.runtimeConfig.envVars),
+    envVarsRecordToKeyValueType(currEnvVars),
   );
 
   const nameError = errors.name?.message?.toString() || fieldErrors?.name;
@@ -368,139 +379,158 @@ export default function UpdateWorkerForm({
               )}
             </AccordionContent>
           </AccordionItem>
-          <AccordionItem value="runtime">
-            <AccordionTrigger className="text-lg font-semibold text-foreground">
-              Runtime configuration
-            </AccordionTrigger>
-            <AccordionContent className="grid gap-4">
-              <div className="text-sm text-muted-foreground">
-                Configure the runtime settings for this worker.
-              </div>
-              <Label htmlFor="region">Region</Label>
-              <Select
-                value={region?.toString()}
-                onValueChange={(value) => {
-                  // find the region object from the value
-                  const region = regions.find((i) => i.value === value);
+          {managedWorker.isIac && (
+            <AccordionItem value="iac">
+              <AccordionTrigger className="text-lg font-semibold text-foreground">
+                Infrastructure as code
+              </AccordionTrigger>
+              <AccordionContent className="grid gap-4">
+                <div className="text-sm text-muted-foreground">
+                  This worker is managed via infrastructure as code. To update
+                  the configuration, make changes to your code and push them to
+                  the repository.
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          )}
+          {!managedWorker.isIac && (
+            <AccordionItem value="runtime">
+              <AccordionTrigger className="text-lg font-semibold text-foreground">
+                Runtime configuration
+              </AccordionTrigger>
+              <AccordionContent className="grid gap-4">
+                <div className="text-sm text-muted-foreground">
+                  Configure the runtime settings for this worker.
+                </div>
+                <Label htmlFor="region">Region</Label>
+                <Select
+                  value={region?.toString()}
+                  onValueChange={(value) => {
+                    // find the region object from the value
+                    const region = regions.find((i) => i.value === value);
 
-                  if (!region) {
-                    return;
-                  }
+                    if (!region) {
+                      return;
+                    }
 
-                  setValue('runtimeConfig.region', region.value);
-                }}
-              >
-                <SelectTrigger className="w-fit">
-                  <SelectValue id="region" placeholder="Choose region" />
-                </SelectTrigger>
-                <SelectContent>
-                  {regions.map((i) => (
-                    <SelectItem key={i.value} value={i.value}>
-                      {i.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Label htmlFor="numReplicas">Number of replicas</Label>
-              <Controller
-                control={control}
-                name="runtimeConfig.numReplicas"
-                render={({ field }) => {
-                  return (
-                    <Input
-                      {...field}
-                      type="number"
-                      onChange={(e) => {
-                        if (e.target.value === '') {
-                          field.onChange(e.target.value);
-                          return;
-                        }
+                    setValue('runtimeConfig.region', region.value);
+                  }}
+                >
+                  <SelectTrigger className="w-fit">
+                    <SelectValue id="region" placeholder="Choose region" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {regions.map((i) => (
+                      <SelectItem key={i.value} value={i.value}>
+                        {i.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Label htmlFor="numReplicas">Number of replicas</Label>
+                <Controller
+                  control={control}
+                  name="runtimeConfig.numReplicas"
+                  render={({ field }) => {
+                    return (
+                      <Input
+                        {...field}
+                        type="number"
+                        onChange={(e) => {
+                          if (e.target.value === '') {
+                            field.onChange(e.target.value);
+                            return;
+                          }
 
-                        field.onChange(parseInt(e.target.value));
-                      }}
-                      min={1}
-                      max={16}
-                      id="numReplicas"
-                      placeholder="1"
-                    />
-                  );
-                }}
-              />
-              {numReplicasError && (
-                <div className="text-sm text-red-500">{numReplicasError}</div>
-              )}
-              <Label htmlFor="machineType">Machine type</Label>
-              <Controller
-                control={control}
-                name="runtimeConfig.cpuKind"
-                render={({ field }) => {
-                  return (
-                    <Select
-                      {...field}
-                      value={machineType}
-                      onValueChange={(value) => {
-                        // get the correct machine type from the value
-                        const machineType = machineTypes.find(
-                          (i) => i.title === value,
-                        );
+                          field.onChange(parseInt(e.target.value));
+                        }}
+                        min={1}
+                        max={16}
+                        id="numReplicas"
+                        placeholder="1"
+                      />
+                    );
+                  }}
+                />
+                {numReplicasError && (
+                  <div className="text-sm text-red-500">{numReplicasError}</div>
+                )}
+                <Label htmlFor="machineType">Machine type</Label>
+                <Controller
+                  control={control}
+                  name="runtimeConfig.cpuKind"
+                  render={({ field }) => {
+                    return (
+                      <Select
+                        {...field}
+                        value={machineType}
+                        onValueChange={(value) => {
+                          // get the correct machine type from the value
+                          const machineType = machineTypes.find(
+                            (i) => i.title === value,
+                          );
 
-                        setMachineType(value);
-                        setValue('runtimeConfig.cpus', machineType?.cpus || 1);
-                        setValue(
-                          'runtimeConfig.memoryMb',
-                          machineType?.memoryMb || 1024,
-                        );
-                        setValue(
-                          'runtimeConfig.cpuKind',
-                          machineType?.cpuKind || 'shared',
-                        );
-                      }}
-                    >
-                      <SelectTrigger className="w-fit">
-                        <SelectValue
-                          id="machineType"
-                          placeholder="Choose type"
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {machineTypes.map((i) => (
-                          <SelectItem key={i.title} value={i.title}>
-                            {i.title}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  );
-                }}
-              />
-              {cpuKindError && (
-                <div className="text-sm text-red-500">{cpuKindError}</div>
-              )}
-              {cpusError && (
-                <div className="text-sm text-red-500">{cpusError}</div>
-              )}
-              {memoryMbError && (
-                <div className="text-sm text-red-500">{memoryMbError}</div>
-              )}
-              <Label>Environment Variables</Label>
-              <EnvGroupArray
-                values={envVars}
-                setValues={(value) => {
-                  setEnvVars(value);
-                  setValue(
-                    'runtimeConfig.envVars',
-                    value.reduce<Record<string, string>>((acc, item) => {
-                      acc[item.key] = item.value;
-                      return acc;
-                    }, {}),
-                  );
-                }}
-              />
-              {envVarsError && (
-                <div className="text-sm text-red-500">{envVarsError}</div>
-              )}
-            </AccordionContent>
-          </AccordionItem>
+                          setMachineType(value);
+                          setValue(
+                            'runtimeConfig.cpus',
+                            machineType?.cpus || 1,
+                          );
+                          setValue(
+                            'runtimeConfig.memoryMb',
+                            machineType?.memoryMb || 1024,
+                          );
+                          setValue(
+                            'runtimeConfig.cpuKind',
+                            machineType?.cpuKind || 'shared',
+                          );
+                        }}
+                      >
+                        <SelectTrigger className="w-fit">
+                          <SelectValue
+                            id="machineType"
+                            placeholder="Choose type"
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {machineTypes.map((i) => (
+                            <SelectItem key={i.title} value={i.title}>
+                              {i.title}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    );
+                  }}
+                />
+                {cpuKindError && (
+                  <div className="text-sm text-red-500">{cpuKindError}</div>
+                )}
+                {cpusError && (
+                  <div className="text-sm text-red-500">{cpusError}</div>
+                )}
+                {memoryMbError && (
+                  <div className="text-sm text-red-500">{memoryMbError}</div>
+                )}
+                <Label>Environment Variables</Label>
+                <EnvGroupArray
+                  values={envVars}
+                  setValues={(value) => {
+                    setEnvVars(value);
+                    setValue(
+                      'runtimeConfig.envVars',
+                      value.reduce<Record<string, string>>((acc, item) => {
+                        acc[item.key] = item.value;
+                        return acc;
+                      }, {}),
+                    );
+                  }}
+                />
+                {envVarsError && (
+                  <div className="text-sm text-red-500">{envVarsError}</div>
+                )}
+              </AccordionContent>
+            </AccordionItem>
+          )}
         </Accordion>
         <Button
           onClick={handleSubmit(onSubmit)}
@@ -516,8 +546,12 @@ export default function UpdateWorkerForm({
 }
 
 function envVarsRecordToKeyValueType(
-  envVars: Record<string, string>,
+  envVars?: Record<string, string>,
 ): KeyValueType[] {
+  if (!envVars) {
+    return [];
+  }
+
   return Object.entries(envVars).map(([key, value]) => ({
     key,
     value,

@@ -125,7 +125,8 @@ export interface ManagedWorker {
   metadata: APIResourceMeta;
   name: string;
   buildConfig: ManagedWorkerBuildConfig;
-  runtimeConfig: ManagedWorkerRuntimeConfig;
+  isIac: boolean;
+  runtimeConfigs?: ManagedWorkerRuntimeConfig[];
 }
 
 export interface ManagedWorkerList {
