@@ -113,7 +113,7 @@ func GetCreateWorkflowRunOptsFromManual(
 		AdditionalMetadata: additionalMetadata,
 	}
 
-	if workflowVersion.ConcurrencyLimitStrategy.Valid {
+	if workflowVersion.ConcurrencyLimitStrategy.Valid && workflowVersion.ConcurrencyGroupId.Valid {
 		opts.GetGroupKeyRun = &CreateGroupKeyRunOpts{
 			Input: input,
 		}
@@ -145,7 +145,7 @@ func GetCreateWorkflowRunOptsFromParent(
 
 	WithParent(parentId, parentStepRunId, childIndex, childKey, additionalMetadata, parentAdditionalMetadata)(opts)
 
-	if workflowVersion.ConcurrencyLimitStrategy.Valid {
+	if workflowVersion.ConcurrencyLimitStrategy.Valid && workflowVersion.ConcurrencyGroupId.Valid {
 		opts.GetGroupKeyRun = &CreateGroupKeyRunOpts{
 			Input: input,
 		}
@@ -173,7 +173,7 @@ func GetCreateWorkflowRunOptsFromEvent(
 		AdditionalMetadata: additionalMetadata,
 	}
 
-	if workflowVersion.ConcurrencyLimitStrategy.Valid {
+	if workflowVersion.ConcurrencyLimitStrategy.Valid && workflowVersion.ConcurrencyGroupId.Valid {
 		opts.GetGroupKeyRun = &CreateGroupKeyRunOpts{
 			Input: input,
 		}
@@ -203,7 +203,7 @@ func GetCreateWorkflowRunOptsFromCron(
 		AdditionalMetadata: additionalMetadata,
 	}
 
-	if workflowVersion.ConcurrencyLimitStrategy.Valid {
+	if workflowVersion.ConcurrencyLimitStrategy.Valid && workflowVersion.ConcurrencyGroupId.Valid {
 		opts.GetGroupKeyRun = &CreateGroupKeyRunOpts{
 			Input: input,
 		}
@@ -232,7 +232,7 @@ func GetCreateWorkflowRunOptsFromSchedule(
 		AdditionalMetadata:  additionalMetadata,
 	}
 
-	if workflowVersion.ConcurrencyLimitStrategy.Valid {
+	if workflowVersion.ConcurrencyLimitStrategy.Valid && workflowVersion.ConcurrencyGroupId.Valid {
 		opts.GetGroupKeyRun = &CreateGroupKeyRunOpts{
 			Input: input,
 		}
@@ -375,8 +375,13 @@ type WorkflowRunMetricsCountOpts struct {
 	WorkflowVersionId *string `validate:"omitempty,uuid"`
 }
 
+type StepRunForJobRun struct {
+	*dbsqlc.GetStepRunsForJobRunsRow
+	ChildWorkflowsCount int
+}
+
 type WorkflowRunAPIRepository interface {
-	RegisterCreateCallback(callback Callback[*db.WorkflowRunModel])
+	RegisterCreateCallback(callback Callback[*dbsqlc.WorkflowRun])
 
 	// ListWorkflowRuns returns workflow runs for a given workflow version id.
 	ListWorkflowRuns(ctx context.Context, tenantId string, opts *ListWorkflowRunsOpts) (*ListWorkflowRunsResult, error)
@@ -384,13 +389,15 @@ type WorkflowRunAPIRepository interface {
 	// Counts by status
 	WorkflowRunMetricsCount(ctx context.Context, tenantId string, opts *WorkflowRunsMetricsOpts) (*dbsqlc.WorkflowRunsMetricsCountRow, error)
 
-	GetWorkflowRunInputData(tenantId, workflowRunId string) (map[string]interface{}, error)
-
 	// CreateNewWorkflowRun creates a new workflow run for a workflow version.
-	CreateNewWorkflowRun(ctx context.Context, tenantId string, opts *CreateWorkflowRunOpts) (*db.WorkflowRunModel, error)
+	CreateNewWorkflowRun(ctx context.Context, tenantId string, opts *CreateWorkflowRunOpts) (*dbsqlc.WorkflowRun, error)
 
 	// GetWorkflowRunById returns a workflow run by id.
-	GetWorkflowRunById(tenantId, runId string) (*db.WorkflowRunModel, error)
+	GetWorkflowRunById(ctx context.Context, tenantId, runId string) (*dbsqlc.GetWorkflowRunByIdRow, error)
+
+	GetStepsForJobs(ctx context.Context, tenantId string, jobIds []string) ([]*dbsqlc.GetStepsForJobsRow, error)
+
+	GetStepRunsForJobRuns(ctx context.Context, tenantId string, jobRunIds []string) ([]*StepRunForJobRun, error)
 }
 
 var (
@@ -403,6 +410,12 @@ type ErrDedupeValueExists struct {
 
 func (e ErrDedupeValueExists) Error() string {
 	return fmt.Sprintf("workflow run with dedupe value %s already exists", e.DedupeValue)
+}
+
+type UpdateWorkflowRunFromGroupKeyEvalOpts struct {
+	GroupKey *string
+
+	Error *string
 }
 
 type WorkflowRunEngineRepository interface {
@@ -420,6 +433,12 @@ type WorkflowRunEngineRepository interface {
 	// CreateNewWorkflowRun creates a new workflow run for a workflow version.
 	CreateNewWorkflowRun(ctx context.Context, tenantId string, opts *CreateWorkflowRunOpts) (string, error)
 
+	GetWorkflowRunInputData(tenantId, workflowRunId string) (map[string]interface{}, error)
+
+	ProcessWorkflowRunUpdates(ctx context.Context, tenantId string) (bool, error)
+
+	UpdateWorkflowRunFromGroupKeyEval(ctx context.Context, tenantId, workflowRunId string, opts *UpdateWorkflowRunFromGroupKeyEvalOpts) error
+
 	// GetWorkflowRunById returns a workflow run by id.
 	GetWorkflowRunById(ctx context.Context, tenantId, runId string) (*dbsqlc.GetWorkflowRunRow, error)
 
@@ -427,7 +446,7 @@ type WorkflowRunEngineRepository interface {
 
 	ReplayWorkflowRun(ctx context.Context, tenantId, workflowRunId string) (*dbsqlc.GetWorkflowRunRow, error)
 
-	ListActiveQueuedWorkflowVersions(ctx context.Context) ([]*dbsqlc.ListActiveQueuedWorkflowVersionsRow, error)
+	ListActiveQueuedWorkflowVersions(ctx context.Context, tenantId string) ([]*dbsqlc.ListActiveQueuedWorkflowVersionsRow, error)
 
 	// DeleteExpiredWorkflowRuns deletes workflow runs that were created before the given time. It returns the number of deleted runs
 	// and the number of non-deleted runs that match the conditions.

@@ -57,6 +57,10 @@ func (w *workerAPIRepository) ListWorkerState(tenantId, workerId string, maxRuns
 	slots, err := w.queries.ListSemaphoreSlotsWithStateForWorker(context.Background(), w.pool, dbsqlc.ListSemaphoreSlotsWithStateForWorkerParams{
 		Workerid: sqlchelpers.UUIDFromStr(workerId),
 		Tenantid: sqlchelpers.UUIDFromStr(tenantId),
+		Limit: pgtype.Int4{
+			Int32: int32(maxRuns),
+			Valid: true,
+		},
 	})
 
 	if err != nil {
@@ -93,7 +97,7 @@ func (w *workerAPIRepository) ListWorkerState(tenantId, workerId string, maxRuns
 			}
 
 			// just do 20 for now
-			if len(uniqueStepRunIds) >= 20 {
+			if len(uniqueStepRunIds) > 20 {
 				break
 			}
 
@@ -145,15 +149,7 @@ func (r *workerAPIRepository) ListWorkers(tenantId string, opts *repository.List
 		}
 	}
 
-	tx, err := r.pool.Begin(context.Background())
-
-	if err != nil {
-		return nil, err
-	}
-
-	defer deferRollback(context.Background(), r.l, tx.Rollback)
-
-	workers, err := r.queries.ListWorkersWithSlotCount(context.Background(), tx, queryParams)
+	workers, err := r.queries.ListWorkersWithSlotCount(context.Background(), r.pool, queryParams)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -161,12 +157,6 @@ func (r *workerAPIRepository) ListWorkers(tenantId string, opts *repository.List
 		} else {
 			return nil, fmt.Errorf("could not list workers: %w", err)
 		}
-	}
-
-	err = tx.Commit(context.Background())
-
-	if err != nil {
-		return nil, fmt.Errorf("could not commit transaction: %w", err)
 	}
 
 	return workers, nil
@@ -299,27 +289,6 @@ func (w *workerEngineRepository) CreateNewWorker(ctx context.Context, tenantId s
 
 			if err != nil {
 				return nil, nil, fmt.Errorf("could not create worker: %w", err)
-			}
-
-			err = w.queries.CreateWorkerCount(ctx, tx, dbsqlc.CreateWorkerCountParams{
-				Workerid: worker.ID,
-				MaxRuns:  createParams.MaxRuns,
-			})
-
-			if err != nil {
-				return nil, nil, fmt.Errorf("could not create worker count: %w", err)
-			}
-
-			err = w.queries.StubWorkerSemaphoreSlots(ctx, tx, dbsqlc.StubWorkerSemaphoreSlotsParams{
-				Workerid: worker.ID,
-				MaxRuns: pgtype.Int4{
-					Int32: worker.MaxRuns,
-					Valid: true,
-				},
-			})
-
-			if err != nil {
-				return nil, nil, fmt.Errorf("could not stub worker semaphore slots: %w", err)
 			}
 		}
 
@@ -485,10 +454,6 @@ func (w *workerEngineRepository) UpdateWorkersByWebhookId(ctx context.Context, p
 	return err
 }
 
-func (w *workerEngineRepository) ResolveWorkerSemaphoreSlots(ctx context.Context, tenantId pgtype.UUID) (*dbsqlc.ResolveWorkerSemaphoreSlotsRow, error) {
-	return w.queries.ResolveWorkerSemaphoreSlots(ctx, w.pool, tenantId)
-}
-
 func (w *workerEngineRepository) UpdateWorkerActiveStatus(ctx context.Context, tenantId, workerId string, isActive bool, timestamp time.Time) (*dbsqlc.Worker, error) {
 	worker, err := w.queries.UpdateWorkerActiveStatus(ctx, w.pool, dbsqlc.UpdateWorkerActiveStatusParams{
 		ID:                      sqlchelpers.UUIDFromStr(workerId),
@@ -562,4 +527,47 @@ func (r *workerEngineRepository) DeleteOldWorkers(ctx context.Context, tenantId 
 	}
 
 	return hasMore, nil
+}
+
+func (r *workerEngineRepository) DeleteOldWorkerEvents(ctx context.Context, tenantId string, lastHeartbeatAfter time.Time) error {
+	// list workers
+	workers, err := r.queries.ListWorkersWithSlotCount(ctx, r.pool, dbsqlc.ListWorkersWithSlotCountParams{
+		Tenantid:           sqlchelpers.UUIDFromStr(tenantId),
+		LastHeartbeatAfter: sqlchelpers.TimestampFromTime(lastHeartbeatAfter),
+	})
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+
+		return err
+	}
+
+	for _, worker := range workers {
+		hasMore := true
+
+		for hasMore {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			// delete worker events
+			hasMore, err = r.queries.DeleteOldWorkerAssignEvents(ctx, r.pool, dbsqlc.DeleteOldWorkerAssignEventsParams{
+				Workerid: worker.Worker.ID,
+				MaxRuns:  worker.Worker.MaxRuns,
+				Limit:    100,
+			})
+
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					break
+				}
+
+				return fmt.Errorf("could not delete old worker events: %w", err)
+			}
+		}
+	}
+
+	return nil
 }

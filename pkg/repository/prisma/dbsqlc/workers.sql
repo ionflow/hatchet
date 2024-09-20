@@ -3,11 +3,15 @@ SELECT
     sqlc.embed(workers),
     ww."url" AS "webhookUrl",
     ww."id" AS "webhookId",
-    wsc."count" AS "remainingSlots"
+    workers."maxRuns" - (
+        SELECT COUNT(*)
+        FROM "SemaphoreQueueItem" sqi
+        WHERE
+            sqi."tenantId" = workers."tenantId" AND
+            sqi."workerId" = workers."id"
+    ) AS "remainingSlots"
 FROM
     "Worker" workers
-JOIN
-    "WorkerSemaphoreCount" wsc ON workers."id" = wsc."workerId"
 LEFT JOIN
     "WebhookWorker" ww ON workers."webhookId" = ww."id"
 WHERE
@@ -35,17 +39,19 @@ WHERE
         ))
     )
 GROUP BY
-    workers."id", ww."url", ww."id", wsc."count";
+    workers."id", ww."url", ww."id";
 
 -- name: GetWorkerById :one
 SELECT
     sqlc.embed(w),
     ww."url" AS "webhookUrl",
-    (
+    w."maxRuns" - (
         SELECT COUNT(*)
-        FROM "WorkerSemaphoreSlot"
-        WHERE "workerId" = w.id AND "stepRunId" IS NOT NULL
-    ) AS filled_slots
+        FROM "SemaphoreQueueItem" sqi
+        WHERE
+            sqi."tenantId" = w."tenantId" AND
+            sqi."workerId" = w."id"
+    ) AS "remainingSlots"
 FROM
     "Worker" w
 LEFT JOIN
@@ -63,13 +69,6 @@ WHERE
     a."tenantId" = @tenantId::uuid AND
     w."id" = @workerId::uuid;
 
-
--- name: StubWorkerSemaphoreSlots :exec
-INSERT INTO "WorkerSemaphoreSlot" ("id", "workerId")
-SELECT gen_random_uuid(), @workerId::uuid
-FROM generate_series(1, sqlc.narg('maxRuns')::int);
-
-
 -- name: ListSemaphoreSlotsWithStateForWorker :many
 SELECT
     sr."id" AS "stepRunId",
@@ -79,14 +78,20 @@ SELECT
     sr."startedAt" AS "startedAt",
     jr."workflowRunId" AS "workflowRunId"
 FROM
-    "StepRun" sr
+    "SemaphoreQueueItem" sqi
+JOIN
+    "StepRun" sr ON sr."id" = sqi."stepRunId"
 JOIN
     "JobRun" jr ON sr."jobRunId" = jr."id"
 JOIN
     "Step" s ON sr."stepId" = s."id"
 WHERE
-    sr."workerId" = @workerId::uuid
-    AND sr."tenantId" = @tenantId::uuid;
+    sqi."tenantId" = @tenantId::uuid
+    AND sqi."workerId" = @workerId::uuid
+ORDER BY
+    sr."createdAt" DESC
+LIMIT
+    COALESCE(sqlc.narg('limit')::int, 100);
 
 -- name: ListRecentAssignedEventsForWorker :many
 SELECT
@@ -139,12 +144,6 @@ INSERT INTO "Worker" (
     sqlc.narg('type')::"WorkerType"
 ) RETURNING *;
 
--- name: CreateWorkerCount :exec
-INSERT INTO
-    "WorkerSemaphoreCount" ("workerId", "count")
-VALUES
-    (@workerId::uuid, sqlc.narg('maxRuns')::int);
-
 -- name: GetWorkerByWebhookId :one
 SELECT
     *
@@ -177,43 +176,6 @@ SET
 WHERE
     "id" = @id::uuid
 RETURNING *;
-
--- name: ResolveWorkerSemaphoreSlots :one
-WITH to_count AS (
-    SELECT
-        wss."id"
-    FROM
-        "Worker" w
-    LEFT JOIN
-        "WorkerSemaphoreSlot" wss ON w."id" = wss."workerId" AND wss."stepRunId" IS NOT NULL
-    JOIN "StepRun" sr ON wss."stepRunId" = sr."id" AND sr."status" NOT IN ('RUNNING', 'ASSIGNED') AND sr."tenantId" = @tenantId::uuid
-    WHERE
-        w."tenantId" = @tenantId::uuid
-        AND w."lastHeartbeatAt" > NOW() - INTERVAL '5 seconds'
-        -- necessary because isActive is set to false immediately when the stream closes
-        AND w."isActive" = true
-        AND w."isPaused" = false
-    LIMIT 21
-),
-to_resolve AS (
-    SELECT * FROM to_count LIMIT 20
-),
-update_result AS (
-    UPDATE "WorkerSemaphoreSlot" wss
-    SET "stepRunId" = null
-    WHERE wss."id" IN (SELECT "id" FROM to_resolve)
-    RETURNING wss."id"
-)
-SELECT
-	CASE
-		WHEN COUNT(*) > 0 THEN TRUE
-		ELSE FALSE
-	END AS "hasResolved",
-	CASE
-		WHEN COUNT(*) > 10 THEN TRUE
-		ELSE FALSE
-	END AS "hasMore"
-FROM to_count;
 
 -- name: LinkActionsToWorker :exec
 INSERT INTO "_ActionToWorker" (
@@ -339,10 +301,6 @@ WITH for_delete AS (
             ELSE FALSE
         END as has_more
     FROM for_delete
-), delete_slots AS (
-    DELETE FROM "WorkerSemaphoreSlot" wss
-    WHERE wss."workerId" IN (SELECT "id" FROM expired_with_limit)
-    RETURNING wss."id"
 ), delete_events AS (
     DELETE FROM "WorkerAssignEvent" wae
     WHERE wae."workerId" IN (SELECT "id" FROM expired_with_limit)
@@ -350,5 +308,29 @@ WITH for_delete AS (
 )
 DELETE FROM "Worker" w
 WHERE w."id" IN (SELECT "id" FROM expired_with_limit)
+RETURNING
+    (SELECT has_more FROM has_more) as has_more;
+
+-- name: DeleteOldWorkerAssignEvents :one
+-- delete worker assign events outside of the first <maxRuns> events for a worker
+WITH for_delete AS (
+    SELECT
+        "id"
+    FROM "WorkerAssignEvent" wae
+    WHERE
+        wae."workerId" = @workerId::uuid
+    ORDER BY wae."id" DESC
+    OFFSET sqlc.arg('maxRuns')::int
+    LIMIT sqlc.arg('limit')::int + 1
+), has_more AS (
+    SELECT
+        CASE
+            WHEN COUNT(*) > sqlc.arg('limit') THEN TRUE
+            ELSE FALSE
+        END as has_more
+    FROM for_delete
+)
+DELETE FROM "WorkerAssignEvent" wae
+WHERE wae."id" IN (SELECT "id" FROM for_delete)
 RETURNING
     (SELECT has_more FROM has_more) as has_more;

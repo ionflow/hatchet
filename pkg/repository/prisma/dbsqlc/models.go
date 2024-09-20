@@ -60,6 +60,7 @@ type InternalQueue string
 const (
 	InternalQueueWORKERSEMAPHORECOUNT InternalQueue = "WORKER_SEMAPHORE_COUNT"
 	InternalQueueSTEPRUNUPDATE        InternalQueue = "STEP_RUN_UPDATE"
+	InternalQueueWORKFLOWRUNUPDATE    InternalQueue = "WORKFLOW_RUN_UPDATE"
 )
 
 func (e *InternalQueue) Scan(src interface{}) error {
@@ -319,21 +320,23 @@ func (ns NullLogLineLevel) Value() (driver.Value, error) {
 type StepRunEventReason string
 
 const (
-	StepRunEventReasonREQUEUEDNOWORKER   StepRunEventReason = "REQUEUED_NO_WORKER"
-	StepRunEventReasonREQUEUEDRATELIMIT  StepRunEventReason = "REQUEUED_RATE_LIMIT"
-	StepRunEventReasonSCHEDULINGTIMEDOUT StepRunEventReason = "SCHEDULING_TIMED_OUT"
-	StepRunEventReasonASSIGNED           StepRunEventReason = "ASSIGNED"
-	StepRunEventReasonSTARTED            StepRunEventReason = "STARTED"
-	StepRunEventReasonFINISHED           StepRunEventReason = "FINISHED"
-	StepRunEventReasonFAILED             StepRunEventReason = "FAILED"
-	StepRunEventReasonRETRYING           StepRunEventReason = "RETRYING"
-	StepRunEventReasonCANCELLED          StepRunEventReason = "CANCELLED"
-	StepRunEventReasonTIMEDOUT           StepRunEventReason = "TIMED_OUT"
-	StepRunEventReasonREASSIGNED         StepRunEventReason = "REASSIGNED"
-	StepRunEventReasonSLOTRELEASED       StepRunEventReason = "SLOT_RELEASED"
-	StepRunEventReasonTIMEOUTREFRESHED   StepRunEventReason = "TIMEOUT_REFRESHED"
-	StepRunEventReasonRETRIEDBYUSER      StepRunEventReason = "RETRIED_BY_USER"
-	StepRunEventReasonSENTTOWORKER       StepRunEventReason = "SENT_TO_WORKER"
+	StepRunEventReasonREQUEUEDNOWORKER             StepRunEventReason = "REQUEUED_NO_WORKER"
+	StepRunEventReasonREQUEUEDRATELIMIT            StepRunEventReason = "REQUEUED_RATE_LIMIT"
+	StepRunEventReasonSCHEDULINGTIMEDOUT           StepRunEventReason = "SCHEDULING_TIMED_OUT"
+	StepRunEventReasonASSIGNED                     StepRunEventReason = "ASSIGNED"
+	StepRunEventReasonSTARTED                      StepRunEventReason = "STARTED"
+	StepRunEventReasonFINISHED                     StepRunEventReason = "FINISHED"
+	StepRunEventReasonFAILED                       StepRunEventReason = "FAILED"
+	StepRunEventReasonRETRYING                     StepRunEventReason = "RETRYING"
+	StepRunEventReasonCANCELLED                    StepRunEventReason = "CANCELLED"
+	StepRunEventReasonTIMEDOUT                     StepRunEventReason = "TIMED_OUT"
+	StepRunEventReasonREASSIGNED                   StepRunEventReason = "REASSIGNED"
+	StepRunEventReasonSLOTRELEASED                 StepRunEventReason = "SLOT_RELEASED"
+	StepRunEventReasonTIMEOUTREFRESHED             StepRunEventReason = "TIMEOUT_REFRESHED"
+	StepRunEventReasonRETRIEDBYUSER                StepRunEventReason = "RETRIED_BY_USER"
+	StepRunEventReasonSENTTOWORKER                 StepRunEventReason = "SENT_TO_WORKER"
+	StepRunEventReasonWORKFLOWRUNGROUPKEYSUCCEEDED StepRunEventReason = "WORKFLOW_RUN_GROUP_KEY_SUCCEEDED"
+	StepRunEventReasonWORKFLOWRUNGROUPKEYFAILED    StepRunEventReason = "WORKFLOW_RUN_GROUP_KEY_FAILED"
 )
 
 func (e *StepRunEventReason) Scan(src interface{}) error {
@@ -1030,6 +1033,12 @@ type SecurityCheckIdent struct {
 	ID pgtype.UUID `json:"id"`
 }
 
+type SemaphoreQueueItem struct {
+	StepRunId pgtype.UUID `json:"stepRunId"`
+	WorkerId  pgtype.UUID `json:"workerId"`
+	TenantId  pgtype.UUID `json:"tenantId"`
+}
+
 type Service struct {
 	ID          pgtype.UUID      `json:"id"`
 	CreatedAt   pgtype.Timestamp `json:"createdAt"`
@@ -1140,6 +1149,7 @@ type StepRunEvent struct {
 	Message       string               `json:"message"`
 	Count         int32                `json:"count"`
 	Data          []byte               `json:"data"`
+	WorkflowRunId pgtype.UUID          `json:"workflowRunId"`
 }
 
 type StepRunOrder struct {
@@ -1163,6 +1173,7 @@ type StepRunResultArchive struct {
 	CancelledAt     pgtype.Timestamp `json:"cancelledAt"`
 	CancelledReason pgtype.Text      `json:"cancelledReason"`
 	CancelledError  pgtype.Text      `json:"cancelledError"`
+	RetryCount      int32            `json:"retryCount"`
 }
 
 type StreamEvent struct {
@@ -1284,6 +1295,15 @@ type Ticker struct {
 	IsActive        bool             `json:"isActive"`
 }
 
+type TimeoutQueueItem struct {
+	ID         int64            `json:"id"`
+	StepRunId  pgtype.UUID      `json:"stepRunId"`
+	RetryCount int32            `json:"retryCount"`
+	TimeoutAt  pgtype.Timestamp `json:"timeoutAt"`
+	TenantId   pgtype.UUID      `json:"tenantId"`
+	IsQueued   bool             `json:"isQueued"`
+}
+
 type User struct {
 	ID            pgtype.UUID      `json:"id"`
 	CreatedAt     pgtype.Timestamp `json:"createdAt"`
@@ -1380,22 +1400,6 @@ type WorkerLabel struct {
 	IntValue  pgtype.Int4      `json:"intValue"`
 }
 
-type WorkerSemaphore struct {
-	WorkerId pgtype.UUID `json:"workerId"`
-	Slots    int32       `json:"slots"`
-}
-
-type WorkerSemaphoreCount struct {
-	WorkerId pgtype.UUID `json:"workerId"`
-	Count    int32       `json:"count"`
-}
-
-type WorkerSemaphoreSlot struct {
-	ID        pgtype.UUID `json:"id"`
-	WorkerId  pgtype.UUID `json:"workerId"`
-	StepRunId pgtype.UUID `json:"stepRunId"`
-}
-
 type Workflow struct {
 	ID          pgtype.UUID      `json:"id"`
 	CreatedAt   pgtype.Timestamp `json:"createdAt"`
@@ -1407,13 +1411,14 @@ type Workflow struct {
 }
 
 type WorkflowConcurrency struct {
-	ID                    pgtype.UUID              `json:"id"`
-	CreatedAt             pgtype.Timestamp         `json:"createdAt"`
-	UpdatedAt             pgtype.Timestamp         `json:"updatedAt"`
-	WorkflowVersionId     pgtype.UUID              `json:"workflowVersionId"`
-	GetConcurrencyGroupId pgtype.UUID              `json:"getConcurrencyGroupId"`
-	MaxRuns               int32                    `json:"maxRuns"`
-	LimitStrategy         ConcurrencyLimitStrategy `json:"limitStrategy"`
+	ID                         pgtype.UUID              `json:"id"`
+	CreatedAt                  pgtype.Timestamp         `json:"createdAt"`
+	UpdatedAt                  pgtype.Timestamp         `json:"updatedAt"`
+	WorkflowVersionId          pgtype.UUID              `json:"workflowVersionId"`
+	GetConcurrencyGroupId      pgtype.UUID              `json:"getConcurrencyGroupId"`
+	MaxRuns                    int32                    `json:"maxRuns"`
+	LimitStrategy              ConcurrencyLimitStrategy `json:"limitStrategy"`
+	ConcurrencyGroupExpression pgtype.Text              `json:"concurrencyGroupExpression"`
 }
 
 type WorkflowRun struct {
